@@ -1,0 +1,29 @@
+{
+	"name": "@dialect/socket",
+	"type": "module",
+	"sideEffects": false,
+	"exports": "./src/index.ts",
+	"scripts": {
+		"build": "ts-node ./scripts/build.ts"
+	},
+	"dependencies": {
+		"chalk": "^5.1.2",
+		"debug": "^4.3.4",
+		"map-obj": "^5.0.2",
+		"onetime": "^6.0.0",
+		"outdent": "^0.8.0",
+		"p-timeout": "^6.0.0",
+		"socket.io": "^4.5.2",
+		"socket.io-client": "^4.5.2",
+		"tiny-invariant": "^1.3.1",
+		"type-fest": "^3.3.0",
+		"zod": "^3.19.1"
+	},
+	"devDependencies": {
+		"@types/debug": "^4.1.7",
+		"@types/react": "^18.0.25",
+		"lionconfig": "^2.1.3",
+		"react": "^18.2.0",
+		"typescript": "^4.9.3"
+	}
+}
