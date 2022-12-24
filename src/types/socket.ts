@@ -1,7 +1,9 @@
-import type { ZodSchema } from 'zod'
-export type { Socket as ServerSocket } from 'socket.io'
-export type { Socket as ClientSocket } from 'socket.io-client'
+import type { Socket as ServerSocket } from 'socket.io'
+import type { Socket as ClientSocket } from 'socket.io-client'
+import type { Promisable } from 'type-fest'
+import type { z, ZodSchema } from 'zod'
 
+import type { ZodMaybeInfer } from '~/types/zod.js'
 import type { SocketEventType } from '~/utils/socket.js'
 
 /**
@@ -12,16 +14,18 @@ export type SocketEventDefinitionData<
 > = {
 	[SocketEventType.clientToServer]: {
 		input: ZodSchema
-		response: any
+		response: unknown
 	}
 	[SocketEventType.serverToClient]: {
 		input: ZodSchema
 		roomPropertyKey: string | null
+		roomIdCreator?: (roomPropertyValue: string) => string
 		response: ZodSchema | null
 	}
 	[SocketEventType.clientToClients]: {
 		input: ZodSchema
 		roomPropertyKey: string | null
+		roomIdCreator?: (roomPropertyValue: string) => string
 		response: ZodSchema | null
 	}
 }[EventType] & { key: string }
@@ -44,23 +48,28 @@ export interface SocketEventData<E extends SocketEventDefinition> {
 	input: E['input']
 }
 
+export type SocketEventHandlerContext<E extends SocketEventDefinition> =
+	E['type'] extends 'clientToServer'
+		? { socket: ServerSocket }
+		: { socket: ClientSocket }
+
 /**
 	A handler that executes a callback whenever a socket event is received. Can be on the server side or the client side.
 */
-export interface SocketHandler<
-	Args extends {
-		payload: Record<string, any> | undefined
-		data: any
-		key: string
-	} = {
-		payload: Record<string, any> | undefined
-		data: any
-		key: string
-	}
+export type SocketEventHandler<E extends SocketEventDefinition> = (
+	payload: z.infer<E['input']>,
+	ctx: SocketEventHandlerContext<E>
+) => Promisable<{
+	data: ZodMaybeInfer<E['response']> | null
+	errors?: Array<{ message: string }>
+	extensions?: Record<string, unknown>
+}>
+
+export interface SocketEventHandlerDefinition<
+	E extends SocketEventDefinition = SocketEventDefinition
 > {
-	key: Args['key']
-	schema: ZodSchema | null
-	handler: (payload: Args['payload']) => Args['data']
+	handler: SocketEventHandler<E>
+	eventDefinition: E
 }
 
 /**
@@ -73,3 +82,6 @@ export interface SocketHandlerResponse<Data = unknown> {
 		extensions?: { code?: string; payload?: Record<string, unknown> }
 	}>
 }
+
+export type { Socket as ServerSocket } from 'socket.io'
+export type { Socket as ClientSocket } from 'socket.io-client'

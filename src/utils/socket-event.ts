@@ -1,6 +1,5 @@
 import pTimeout from 'p-timeout'
 import type { Server as SocketServer } from 'socket.io'
-import type { EmptyObject, Promisable } from 'type-fest'
 import type { ZodType } from 'zod'
 import { z } from 'zod'
 
@@ -10,13 +9,10 @@ import type {
 	SocketEventDefinition
 } from '~/types/socket.js'
 import type { SocketHandlerResponse } from '~/types/socket.js'
-import { SocketEventDefinitionData } from '~/types/socket.js'
-import type { ZodObjectSchemaToType } from '~/types/zod.js'
+import type { SocketEventDefinitionData } from '~/types/socket.js'
 import { socketMessageSchema } from '~/utils/message.js'
 import { getRoomPropertyKeyDataFromArgs } from '~/utils/room-property-key.js'
 import { getSocket, SocketEventType } from '~/utils/socket.js'
-import { debug } from '~/utils/debug.js'
-
 
 // eslint-disable-next-line no-unused-expressions -- TODO: debug why there is a `ReferenceError` if `z` is not accessed in the global scope
 z
@@ -40,13 +36,13 @@ export function createClientSocketEventEmitter({
 		>
 	>(eventDefinition: E, input: z.infer<E['input']>) {
 		if ('roomPropertyKey' in eventDefinition) {
-			debug(
+			console.debug(
 				`Emitting event ${eventDefinition.key} to room ${
 					input[eventDefinition.roomPropertyKey as keyof typeof input] as string
 				}`
 			)
 		} else {
-			debug(`Emitting event ${eventDefinition.key}`)
+			console.debug(`Emitting event ${eventDefinition.key}`)
 		}
 
 		const socket = getSocket(socketOrSocketGetter)
@@ -97,13 +93,13 @@ export function createServerSocketEventEmitter({
 		input: z.infer<E['input']>
 	): { getResponse(args?: { timeout?: number }): Promise<E['response']> } {
 		if (eventDefinition.roomPropertyKey !== null) {
-			debug(
+			console.debug(
 				`Emitting event ${eventDefinition.key} to room ${
 					input[eventDefinition.roomPropertyKey as keyof typeof input] as string
 				}`
 			)
 		} else {
-			debug(`Emitting event ${eventDefinition.key} to all clients`)
+			console.debug(`Emitting event ${eventDefinition.key} to all clients`)
 		}
 
 		const socket = getSocket(socketOrSocketGetter)
@@ -143,9 +139,7 @@ export function defineSocketEvent<Key extends string, Type extends keyof typeof 
 			setInputType<InputSchema extends Record<string, ZodType>>(args: {
 				schema: InputSchema
 			}): {
-				setHandler<ResponseType>(
-					handler: (payload: ZodObjectSchemaToType<InputSchema>) => Promisable<SocketHandlerResponse<ResponseType>>
-				): SocketEventDefinition<
+				setResponseType<ResponseType>(): SocketEventDefinition<
 					typeof SocketEventType['clientToServer'],
 					{ key: Key; input: z.ZodObject<InputSchema>; response: ResponseType }
 				>
@@ -155,7 +149,7 @@ export function defineSocketEvent<Key extends string, Type extends keyof typeof 
 	: Type extends typeof SocketEventType['serverToClient']
 	? {
 			setInputType<InputSchema extends Record<string, ZodType>>(args: { schema: InputSchema }): {
-				setRoomPropertyKey<RoomPropertyKey extends (keyof InputSchema & string) | null>(roomPropertyKey: RoomPropertyKey): {
+				setRoomPropertyKey<RoomPropertyKey extends (keyof InputSchema & string) | null>(roomPropertyKey: RoomPropertyKey, roomIdCreator?: (roomPropertyValue: string) => string): {
 					setResponseType<ResponseSchemaArg extends ({ schema: Record<string, ZodType> } | null)>(arg: ResponseSchemaArg): SocketEventDefinition<
 						typeof SocketEventType['serverToClient'],
 						{
@@ -178,32 +172,10 @@ export function defineSocketEvent<Key extends string, Type extends keyof typeof 
 	: Type extends typeof SocketEventType['clientToClients']
 	? {
 			setInputType<InputSchema extends Record<string, ZodType>>(args: { schema: InputSchema }): {
-				setRoomPropertyKey<RoomPropertyKey extends (keyof InputSchema & string) | null>(roomPropertyKey: RoomPropertyKey): {
+				setRoomPropertyKey<RoomPropertyKey extends (keyof InputSchema & string) | null>(roomPropertyKey: RoomPropertyKey, roomIdCreator?: (roomPropertyValue: string) => string): {
 					setResponseType<ResponseSchemaArg extends { schema: ZodType | Record<string, ZodType> } | null>(
 						schema: ResponseSchemaArg
-					): (ResponseSchemaArg extends { schema: ZodType | Record<string, ZodType> } ? {
-						setHandler(
-							handler: (payload: ZodObjectSchemaToType<InputSchema>) => Promisable<
-								SocketHandlerResponse<
-									ResponseSchemaArg['schema'] extends ZodType
-										? z.infer<ResponseSchemaArg['schema']>
-										: ZodObjectSchemaToType<ResponseSchemaArg['schema']>
-								>
-							>
-						): SocketEventDefinition<
-							typeof SocketEventType['clientToClients'],
-							{
-								key: Key
-								input: z.ZodObject<InputSchema>
-								response: ResponseSchemaArg['schema'] extends ZodType
-										? ResponseSchemaArg['schema']
-										: ResponseSchemaArg['schema'] extends Record<string, ZodType>
-										? z.ZodObject<ResponseSchemaArg['schema']>
-										: never
-								roomPropertyKey: RoomPropertyKey
-							}
-						>
-					} : EmptyObject) & SocketEventDefinition<
+					): SocketEventDefinition<
 						typeof SocketEventType['clientToClients'],
 						{
 							key: Key
@@ -226,10 +198,10 @@ export function defineSocketEvent<Key extends string, Type extends keyof typeof 
 		case SocketEventType.clientToServer: {
 			return {
 				setInputType: ({ schema }: { schema: Record<string, ZodType> }) => ({
-					setHandler: (handler: () => SocketHandlerResponse) => ({
+					setResponseType: () => ({
 						...args,
 						input: z.object(schema),
-						response: { __handler: handler },
+						response: undefined
 					} satisfies SocketEventDefinitionData<typeof SocketEventType['clientToServer']>)
 				})
 			} as any
@@ -238,12 +210,13 @@ export function defineSocketEvent<Key extends string, Type extends keyof typeof 
 		case SocketEventType.serverToClient: {
 			return {
 				setInputType: () => ({
-					setRoomPropertyKey: (roomPropertyKey: string) => ({
+					setRoomPropertyKey: (roomPropertyKey: string, roomIdCreator?: (key: string) => string) => ({
 						setResponseType: (arg: { schema: Record<string, ZodType> } | null) => ({
 							...args,
 							// eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- The `input` type is only present in the type system
 							input: undefined!,
 							roomPropertyKey,
+							roomIdCreator,
 							response: arg === null ? null : z.object(arg.schema)
 						} satisfies SocketEventDefinitionData<typeof SocketEventType['serverToClient']>)
 					})
@@ -253,13 +226,14 @@ export function defineSocketEvent<Key extends string, Type extends keyof typeof 
 
 		case SocketEventType.clientToClients: {
 			return {
-				setInputType: ({ schema: inputSchema, roomPropertyKey }: { schema: Record<string, ZodType>, roomPropertyKey: string }) => ({
-					setRoomPropertyKey: () => ({
+				setInputType: ({ schema: inputSchema }: { schema: Record<string, ZodType>, roomPropertyKey: string }) => ({
+					setRoomPropertyKey: (roomPropertyKey: string, roomIdCreator?: (key: string) => string) => ({
 						setResponseType: (responseTypeArgs: { schema: Record<string, ZodType> } | null) => ({
 							...args,
 							roomPropertyKey,
+							roomIdCreator,
 							input: z.object(inputSchema),
-							response: responseTypeArgs === null ? null : z.object(responseTypeArgs.schema)
+							response: responseTypeArgs === null ? null : z.object(responseTypeArgs.schema),
 						} satisfies SocketEventDefinitionData<typeof SocketEventType['clientToClients']>)
 					})
 				})

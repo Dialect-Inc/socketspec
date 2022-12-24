@@ -1,10 +1,13 @@
-import { debug } from '~/utils/debug.js'
 import mapObject from 'map-obj'
 import invariant from 'tiny-invariant'
 import { z } from 'zod'
 
-import type { ClientSocket, ServerSocket } from '~/types/socket.js'
-import { SocketEventDefinitions } from '~/utils/event-definitions.js'
+import type {
+	ClientSocket,
+	ServerSocket,
+	SocketEventDefinition,
+	SocketEventHandlerDefinition
+} from '~/types/socket.js'
 
 export const socketMessageSchema = z.object({
 	key: z.string(),
@@ -12,19 +15,22 @@ export const socketMessageSchema = z.object({
 })
 
 export function createServerSocketMessageHandler({
-	eventDefinitionsImport: socketEventDefinitionsImportMap,
+	socketEventHandlers: socketEventHandlersImportMap,
+	socketEvents: socketEventsImportMap,
 	socket
 }: {
-	eventDefinitionsImport: Record<string, { key: string }>
+	socketEventHandlers: Record<string, any>
+	socketEvents: Record<string, any>
 	socket: ServerSocket
 }) {
+	const socketEventHandlerDefinitionsMap = mapObject(
+		socketEventHandlersImportMap,
+		(_, eventHandler) => [eventHandler.eventDefinition.key, eventHandler]
+	) as Record<string, SocketEventHandlerDefinition>
 	const socketEventDefinitionsMap = mapObject(
-		socketEventDefinitionsImportMap,
-		(_, eventDefinition) => [eventDefinition.key, eventDefinition]
-	)
-	const socketEventDefinitions = new SocketEventDefinitions(
-		socketEventDefinitionsMap
-	)
+		socketEventsImportMap,
+		(_, event) => [event.key, event]
+	) as Record<string, SocketEventDefinition>
 
 	return async function handleServerSocketEvent(
 		message: unknown,
@@ -32,44 +38,104 @@ export function createServerSocketMessageHandler({
 	) {
 		// This is called for 'clientToServer' and 'clientToClients' requests
 		const event = socketMessageSchema.parse(message)
-		debug(`Socket ${socket.id} emitted event ${event.key}`)
+		console.info(`Socket ${socket.id} emitted event ${event.key}`)
 
-		const socketEventDefinition = socketEventDefinitions.get(event.key)
-		if (socketEventDefinition === undefined) {
-			debug(`Socket event with key \`${String(event.key)}\` not found`)
+		const socketEventHandlerDefinition =
+			socketEventHandlerDefinitionsMap[event.key]
+
+		if (socketEventHandlerDefinition === undefined) {
+			// Then the event might be a clientToClients event
+			const socketEventDefinition = socketEventDefinitionsMap[event.key]
+			if (socketEventDefinition === undefined) {
+				console.error(`Socket event with key \`${String(event.key)}\` not found`)
+				return
+			}
+
+			switch (socketEventDefinition.type) {
+				case 'serverToClient': {
+					console.error(
+						`Socket event ${event.key} should not be sent to the server.`
+					)
+					break
+				}
+
+				case 'clientToServer': {
+					console.error(
+						`This server does not have a handler for event ${event.key}.`
+					)
+					break
+				}
+
+				case 'clientToClients': {
+					invariant(
+						'roomPropertyKey' in socketEventDefinition,
+						'Socket events of `clientToClients` must have the `roomPropertyKey` property'
+					)
+
+					if (socketEventDefinition.roomPropertyKey !== null) {
+						const roomPropertyValue =
+							event.input[socketEventDefinition.roomPropertyKey]
+						const roomId =
+							socketEventDefinition.roomIdCreator?.(roomPropertyValue) ??
+							roomPropertyValue
+
+						console.debug(
+							`Emitting event \`${String(event.key)}\` to room ${
+								roomId as string
+							}`
+						)
+
+						socket.to(roomId).emit('message', event, ack)
+					}
+					// If no `roomPropertyKey` is specified, emit to all other clients
+					else {
+						socket.broadcast.emit('message', event, ack)
+					}
+
+					break
+				}
+
+				default: {
+					throw new Error(
+						`Unrecognized socket event type: ${String(
+							socketEventDefinition.type
+						)}`
+					)
+				}
+			}
+
 			return
 		}
 
-		switch (socketEventDefinition.type) {
+		switch (socketEventHandlerDefinition.eventDefinition.type) {
 			case 'serverToClient': {
-				debug(`Socket event ${event.key} should not be sent to the server.`)
+				console.error(`Socket event ${event.key} should not be sent to the server.`)
 				break
 			}
 
 			case 'clientToServer': {
-				const handler = SocketEventDefinitions.getHandlerFromDefinition(
-					socketEventDefinition
+				const response = await socketEventHandlerDefinition.handler(
+					event.input,
+					{ socket: socket as any }
 				)
-				if (handler === undefined) {
-					debug(
-						`No handler was set for event \`${socketEventDefinition.key}\``
-					)
-					return
-				}
-
-				const response = await handler(event.input)
 				ack(response)
 				break
 			}
 
 			case 'clientToClients': {
 				invariant(
-					'roomPropertyKey' in socketEventDefinition,
+					'roomPropertyKey' in socketEventHandlerDefinition.eventDefinition,
 					'Socket events of `clientToClients` must have the `roomPropertyKey` property'
 				)
-				if (socketEventDefinition.roomPropertyKey !== null) {
+				if (
+					socketEventHandlerDefinition.eventDefinition.roomPropertyKey !== null
+				) {
 					socket
-						.to(event.input[socketEventDefinition.roomPropertyKey])
+						.to(
+							event.input[
+								socketEventHandlerDefinition.eventDefinition.roomPropertyKey
+							]
+						)
 						.emit('message', event, ack)
 				}
 				// If no `roomPropertyKey` is specified, emit to all other clients
@@ -83,7 +149,7 @@ export function createServerSocketMessageHandler({
 			default: {
 				throw new Error(
 					`Unrecognized socket event type: ${String(
-						socketEventDefinition.type
+						socketEventHandlerDefinition.eventDefinition.type
 					)}`
 				)
 			}
@@ -92,15 +158,16 @@ export function createServerSocketMessageHandler({
 }
 
 export function createClientSocketMessageHandler({
-	eventDefinitionsImport: socketEventDefinitionsMap,
+	socketEventHandlers: socketEventHandlersImportMap,
 	socket
 }: {
-	eventDefinitionsImport: Record<string, { key: string }>
+	socketEventHandlers: Record<string, any>
 	socket: ClientSocket
 }) {
-	const socketEventDefinitions = new SocketEventDefinitions(
-		socketEventDefinitionsMap
-	)
+	const socketEventHandlerDefinitionsMap = mapObject(
+		socketEventHandlersImportMap,
+		(_, eventHandler) => [eventHandler.eventDefinition.key, eventHandler]
+	) as Record<string, SocketEventHandlerDefinition>
 
 	return async function handleClientSocketEvent(
 		message: unknown,
@@ -108,41 +175,34 @@ export function createClientSocketMessageHandler({
 	) {
 		// This is called for 'clientToServer' and 'clientToClients' requests
 		const event = socketMessageSchema.parse(message)
-		debug(`Socket ${socket.id} emitted event ${event.key}`)
+		console.info(`Socket ${socket.id} emitted event ${event.key}`)
 
-		const socketEventDefinition = socketEventDefinitions.get(event.key)
-		if (socketEventDefinition === undefined) {
-			debug(`Socket event with key \`${String(event.key)}\` not found`)
+		const socketEventHandlerDefinition =
+			socketEventHandlerDefinitionsMap[event.key]
+		if (socketEventHandlerDefinition === undefined) {
+			console.error(`Socket event with key \`${String(event.key)}\` not found`)
 			return
 		}
 
-		switch (socketEventDefinition.type) {
+		switch (socketEventHandlerDefinition.eventDefinition.type) {
 			case 'clientToServer': {
-				debug(`Socket event ${event.key} should not be sent to the client.`)
+				console.error(`Socket event ${event.key} should not be sent to the client.`)
 				break
 			}
 
 			case 'serverToClient':
 			case 'clientToClients': {
-				const handler = SocketEventDefinitions.getHandlerFromDefinition(
-					socketEventDefinition
+				const response = await socketEventHandlerDefinition.handler(
+					event.input,
+					{ socket }
 				)
-
-				if (handler === undefined) {
-					debug(
-						`No handler was set for event \`${socketEventDefinition.key}\``
-					)
-					return
-				}
-
-				const response = await handler(event.input)
 				return ack(response)
 			}
 
 			default: {
 				throw new Error(
 					`Unrecognized socket event type: ${String(
-						socketEventDefinition.type
+						socketEventHandlerDefinition.eventDefinition.type
 					)}`
 				)
 			}

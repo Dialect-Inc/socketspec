@@ -1,5 +1,3 @@
-import { debug } from '~/utils/debug.js'
-import { getErrorMessage } from '~/utils/error.js'
 import type { DependencyList } from 'react'
 import { useCallback, useEffect } from 'react'
 import type { z } from 'zod'
@@ -18,7 +16,9 @@ export function createUseSocketEventHook({
 	socket: ClientSocket | (() => ClientSocket)
 }) {
 	return function useSocketEvent<
-		E extends SocketEventDefinition<'clientToClients'>
+		E extends
+			| SocketEventDefinition<'clientToClients'>
+			| SocketEventDefinition<'serverToClient'>
 	>(
 		args: { event: E } & Record<NonNullable<E['roomPropertyKey']>, string>,
 		handler: (input: z.infer<E['input']>) => void | Promise<void>,
@@ -34,27 +34,30 @@ export function createUseSocketEventHook({
 					if (data.key !== args.event.key) return
 					await cachedHandler(args.event.input.parse(data.input))
 				} catch (error: unknown) {
-					debug(`Error parsing socket data: ${getErrorMessage(error)}`)
+					console.error('Error parsing socket data:', error)
 				}
 			},
 			[args.event.key, args.event.input, cachedHandler]
 		)
 
 		const { value: roomPropertyValue } = getRoomPropertyKeyDataFromArgs(args)
+		const roomId =
+			args.event.roomIdCreator === undefined
+				? roomPropertyValue
+				: args.event.roomIdCreator(roomPropertyValue)
 
-		// Join the socket room based on the `roomPropertyKey`
 		useEffect(() => {
-			socket.emit('joinRoom', roomPropertyValue)
+			socket.emit('joinRoom', roomId)
 			return () => {
-				socket.emit('leaveRoom', roomPropertyValue)
+				socket.emit('leaveRoom', roomId)
 			}
-		}, [roomPropertyValue, socket])
+		}, [roomId, socket])
 
 		useEffect(() => {
 			socket.on('message', listener)
 			return () => {
 				socket.off('message', listener)
 			}
-		}, [handler, listener, socket])
+		}, [listener, socket])
 	}
 }
